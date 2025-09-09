@@ -1,50 +1,15 @@
 import requests
 import json
-# import asyncio
 import logging
-from typing import Dict, Any
-from config import Config
+from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
 class NMTService:
     def __init__(self):
-        self.nmt_base_url = f"{Config.DHRUVA_API_BASE}/pipeline"
+        self.nmt_base_url = "http://13.200.133.97:8000/v2/models/nmt/infer"
         self.headers = {
-            'Accept': '*/*',
-            'Authorization': Config.DHRUVA_AUTH_TOKEN,
             'Content-Type': 'application/json'
-        }
-        
-        # Language-specific service IDs for NMT (updated format)
-        self.service_ids = {
-            # Hindi to English and vice versa
-            "hi-en": "ai4bharat/indictrans--gpu-t4",
-            "en-hi": "ai4bharat/indictrans--gpu-t4",
-            # Tamil to English and vice versa
-            "ta-en": "ai4bharat/indictrans--gpu-t4", 
-            "en-ta": "ai4bharat/indictrans--gpu-t4",
-            # Telugu to English and vice versa
-            "te-en": "ai4bharat/indictrans--gpu-t4",
-            "en-te": "ai4bharat/indictrans--gpu-t4",
-            # Bengali to English and vice versa
-            "bn-en": "ai4bharat/indictrans--gpu-t4",
-            "en-bn": "ai4bharat/indictrans--gpu-t4",
-            # Malayalam to English and vice versa
-            "ml-en": "ai4bharat/indictrans--gpu-t4",
-            "en-ml": "ai4bharat/indictrans--gpu-t4",
-            # Kannada to English and vice versa
-            "kn-en": "ai4bharat/indictrans--gpu-t4",
-            "en-kn": "ai4bharat/indictrans--gpu-t4",
-            # Gujarati to English and vice versa
-            "gu-en": "ai4bharat/indictrans--gpu-t4",
-            "en-gu": "ai4bharat/indictrans--gpu-t4",
-            # Marathi to English and vice versa
-            "mr-en": "ai4bharat/indictrans--gpu-t4",
-            "en-mr": "ai4bharat/indictrans--gpu-t4",
-            # Punjabi to English and vice versa
-            "pa-en": "ai4bharat/indictrans--gpu-t4",
-            "en-pa": "ai4bharat/indictrans--gpu-t4"
         }
         
         # Language mapping
@@ -60,15 +25,22 @@ class NMTService:
             "mr": "Marathi",
             "pa": "Punjabi"
         }
+        
+        # Supported language pairs for translation
+        self.supported_pairs = {
+            "en-hi", "hi-en", "en-ta", "ta-en", "en-te", "te-en",
+            "en-bn", "bn-en", "en-ml", "ml-en", "en-kn", "kn-en",
+            "en-gu", "gu-en", "en-mr", "mr-en", "en-pa", "pa-en"
+        }
     
     def translate_text(self, text: str, source_lang: str, target_lang: str) -> Dict[str, Any]:
         """
-        Translate text from source language to target language
+        Translate text from source language to target language using Triton Inference Server
         
         Args:
             text: Text to translate
-            source_lang: Source language code (e.g., 'ta', 'hi', 'en')
-            target_lang: Target language code (e.g., 'en', 'ta', 'hi')
+            source_lang: Source language code (e.g., 'en', 'hi', 'ta')
+            target_lang: Target language code (e.g., 'hi', 'en', 'ta')
             
         Returns:
             Dict containing translation result
@@ -82,12 +54,10 @@ class NMTService:
                     "target_language": target_lang
                 }
             
-            # Get service ID for this language pair
+            # Check if language pair is supported
             lang_pair = f"{source_lang}-{target_lang}"
-            service_id = self.service_ids.get(lang_pair)
-            
-            if not service_id:
-                logger.warning(f"No service ID found for language pair: {lang_pair}")
+            if lang_pair not in self.supported_pairs:
+                logger.warning(f"Translation not supported for language pair: {lang_pair}")
                 return {
                     "success": False,
                     "error": f"Translation not supported for {source_lang} to {target_lang}",
@@ -96,32 +66,32 @@ class NMTService:
                     "target_language": target_lang
                 }
             
-            logger.info(f"Using NMT service ID: {service_id} for {lang_pair}")
+            logger.info(f"Translating text using Triton NMT API: {lang_pair}")
             
+            # Prepare payload in Triton format
             payload = {
-                "pipelineTasks": [
+                "inputs": [
                     {
-                        "taskType": "translation",
-                        "config": {
-                            "serviceId": service_id,
-                            "language": {
-                                "sourceLanguage": source_lang,
-                                "targetLanguage": target_lang
-                            }
-                        }
+                        "name": "INPUT_TEXT",
+                        "shape": [1, 1],
+                        "datatype": "BYTES",
+                        "data": [text]
+                    },
+                    {
+                        "name": "INPUT_LANGUAGE_ID",
+                        "shape": [1, 1],
+                        "datatype": "BYTES",
+                        "data": [source_lang]
+                    },
+                    {
+                        "name": "OUTPUT_LANGUAGE_ID",
+                        "shape": [1, 1],
+                        "datatype": "BYTES",
+                        "data": [target_lang]
                     }
-                ],
-                "inputData": {
-                    "input": [
-                        {
-                            "source": text
-                        }
-                    ]
-                }
+                ]
             }
             
-            # Make async request
-            # loop = asyncio.get_event_loop()
             response = requests.post(self.nmt_base_url, headers=self.headers, json=payload, timeout=30)
             
             logger.info(f"NMT API response status: {response.status_code}")
@@ -130,21 +100,22 @@ class NMTService:
                 result = response.json()
                 logger.info(f"NMT API response: {json.dumps(result, indent=2)}")
                 
-                # Extract translation from pipeline response
-                if result.get("pipelineResponse") and len(result["pipelineResponse"]) > 0:
-                    pipeline_output = result["pipelineResponse"][0]
-                    if pipeline_output.get("output") and len(pipeline_output["output"]) > 0:
-                        translated_text = pipeline_output["output"][0].get("target", "").strip()
-                        
-                        if translated_text:
-                            logger.info(f"NMT successful: {source_lang} -> {target_lang}, text: '{translated_text}'")
-                            return {
-                                "success": True,
-                                "translated_text": translated_text,
-                                "source_language": source_lang,
-                                "target_language": target_lang,
-                                "raw_response": result
-                            }
+                # Extract translation from Triton response
+                if result.get("outputs"):
+                    for output in result["outputs"]:
+                        if output.get("name") == "OUTPUT_TEXT" and output.get("data"):
+                            translated_text = output["data"][0].strip()
+                            
+                            if translated_text:
+                                logger.info(f"NMT successful: {source_lang} -> {target_lang}, text: '{translated_text}'")
+                                return {
+                                    "success": True,
+                                    "translated_text": translated_text,
+                                    "source_language": source_lang,
+                                    "target_language": target_lang,
+                                    "model_name": result.get("model_name", "nmt"),
+                                    "model_version": result.get("model_version", "1")
+                                }
                 
                 logger.warning(f"No translation found in response for {lang_pair}")
                 return {
@@ -183,9 +154,9 @@ class NMTService:
                 "target_language": target_lang
             }
     
-    def batch_translate(self, texts: list, source_lang: str, target_lang: str) -> Dict[str, Any]:
+    def batch_translate(self, texts: List[str], source_lang: str, target_lang: str) -> Dict[str, Any]:
         """
-        Translate multiple texts at once
+        Translate multiple texts at once using Triton Inference Server
         
         Args:
             texts: List of texts to translate
@@ -196,12 +167,18 @@ class NMTService:
             Dict containing batch translation results
         """
         try:
-            # Get service ID for this language pair
-            lang_pair = f"{source_lang}-{target_lang}"
-            service_id = self.service_ids.get(lang_pair)
+            if source_lang == target_lang:
+                return {
+                    "success": True,
+                    "translated_texts": texts,
+                    "source_language": source_lang,
+                    "target_language": target_lang
+                }
             
-            if not service_id:
-                logger.warning(f"No service ID found for language pair: {lang_pair}")
+            # Check if language pair is supported
+            lang_pair = f"{source_lang}-{target_lang}"
+            if lang_pair not in self.supported_pairs:
+                logger.warning(f"Batch translation not supported for language pair: {lang_pair}")
                 return {
                     "success": False,
                     "error": f"Translation not supported for {source_lang} to {target_lang}",
@@ -210,46 +187,19 @@ class NMTService:
                     "target_language": target_lang
                 }
             
-            payload = {
-                "pipelineTasks": [
-                    {
-                        "taskType": "translation",
-                        "config": {
-                            "serviceId": service_id,
-                            "language": {
-                                "sourceLanguage": source_lang,
-                                "targetLanguage": target_lang
-                            }
-                        }
-                    }
-                ],
-                "inputData": {
-                    "input": [{"source": text} for text in texts]
-                }
-            }
+            translated_texts = []
             
-            # loop = asyncio.get_event_loop()
-            response = requests.post(self.nmt_base_url, headers=self.headers, json=payload, timeout=60)
-            
-            if response.status_code == 200:
-                result = response.json()
-                
-                if result.get("pipelineResponse") and len(result["pipelineResponse"]) > 0:
-                    pipeline_output = result["pipelineResponse"][0]
-                    if pipeline_output.get("output"):
-                        translated_texts = [item.get("target", "") for item in pipeline_output["output"]]
-                        
-                        return {
-                            "success": True,
-                            "translated_texts": translated_texts,
-                            "source_language": source_lang,
-                            "target_language": target_lang
-                        }
+            # Process each text individually (for now, can be optimized for batch processing later)
+            for text in texts:
+                result = self.translate_text(text, source_lang, target_lang)
+                if result.get("success"):
+                    translated_texts.append(result.get("translated_text", text))
+                else:
+                    translated_texts.append(text)  # Fallback to original text
             
             return {
-                "success": False,
-                "error": "Batch translation failed",
-                "translated_texts": texts,  # Fallback
+                "success": True,
+                "translated_texts": translated_texts,
                 "source_language": source_lang,
                 "target_language": target_lang
             }
@@ -266,39 +216,39 @@ class NMTService:
     
     def test_connectivity(self) -> Dict[str, Any]:
         """
-        Test NMT API connectivity
+        Test NMT API connectivity using Triton Inference Server
         
         Returns:
             Dict containing connectivity test result
         """
         try:
-            # Test with Hindi to English translation
-            service_id = self.service_ids.get("hi-en", "ai4bharat/indictrans-hi-en-gpu--t4")
+            # Test with English to Hindi translation
+            test_text = "Hello world. How are you today? The weather is beautiful."
             
-            # Test with simple text using pipeline format
+            # Test payload in Triton format
             test_payload = {
-                "pipelineTasks": [
+                "inputs": [
                     {
-                        "taskType": "translation",
-                        "config": {
-                            "serviceId": service_id,
-                            "language": {
-                                "sourceLanguage": "hi",
-                                "targetLanguage": "en"
-                            }
-                        }
+                        "name": "INPUT_TEXT",
+                        "shape": [1, 1],
+                        "datatype": "BYTES",
+                        "data": [test_text]
+                    },
+                    {
+                        "name": "INPUT_LANGUAGE_ID",
+                        "shape": [1, 1],
+                        "datatype": "BYTES",
+                        "data": ["en"]
+                    },
+                    {
+                        "name": "OUTPUT_LANGUAGE_ID",
+                        "shape": [1, 1],
+                        "datatype": "BYTES",
+                        "data": ["hi"]
                     }
-                ],
-                "inputData": {
-                    "input": [
-                        {
-                            "source": "नमस्ते"  # Hello in Hindi
-                        }
-                    ]
-                }
+                ]
             }
             
-            # loop = asyncio.get_event_loop()
             response = requests.post(self.nmt_base_url, headers=self.headers, json=test_payload, timeout=10)
             
             return {
@@ -306,9 +256,9 @@ class NMTService:
                 "status_code": response.status_code,
                 "response_headers": dict(response.headers),
                 "api_reachable": True,
-                "service_id": service_id,
                 "url": self.nmt_base_url,
-                "response_text": response.text[:500] if hasattr(response, 'text') else None
+                "response_text": response.text[:500] if hasattr(response, 'text') else None,
+                "test_input": test_text
             }
             
         except requests.exceptions.Timeout:
